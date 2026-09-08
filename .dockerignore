@@ -1,0 +1,17 @@
+.git
+.github
+.env
+*.duckdb
+data/
+.deps/
+.npm-cache/
+.docker-config/
+.venv/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+node_modules/
+**/node_modules/
+dist/
+**/dist/

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        warehouse:
+          - { name: duckdb, url: "duckdb://./ci.duckdb" }
+          - { name: postgres, url: "postgresql://analytics:analytics@localhost:5432/analytics" }
+          - { name: clickhouse, url: "clickhouse://default:chpass@localhost:8123/analytics" }
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: analytics
+          POSTGRES_PASSWORD: analytics
+          POSTGRES_DB: analytics
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U analytics -d analytics"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        env:
+          CLICKHOUSE_DB: analytics
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: chpass
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "clickhouse-client --user default --password chpass --query 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: pip install -r api/requirements.txt -r extractor/requirements.txt
+
+      - name: Compile check
+        run: python -m py_compile extractor/*.py api/*.py warehouse/*.py scripts/*.py
+
+      - name: Smoke test (${{ matrix.warehouse.name }})
+        env:
+          DATABASE_URL: ${{ matrix.warehouse.url }}
+        run: python scripts/smoke.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build dashboard
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build

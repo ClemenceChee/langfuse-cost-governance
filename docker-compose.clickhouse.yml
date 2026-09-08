@@ -1,0 +1,61 @@
+# Scale-tier variant: bundles a ClickHouse server as the analytics warehouse.
+#
+#   docker compose -f docker-compose.clickhouse.yml up -d --build
+#
+# Choose this when you're into tens of millions of rows / months of lookback /
+# real-time OLAP aggregation. The default build (docker-compose.yml) is Postgres.
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: chpass
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:8123:8123"   # HTTP interface
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user default --password chpass --query 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  extractor:
+    build:
+      context: .
+      dockerfile: extractor/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: clickhouse://default:chpass@clickhouse:8123/analytics
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DATABASE_URL: clickhouse://default:chpass@clickhouse:8123/analytics
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:8080:80"
+
+volumes:
+  clickhouse-data:

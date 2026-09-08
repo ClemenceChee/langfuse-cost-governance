@@ -1,0 +1,43 @@
+# Zero-server variant: uses an embedded DuckDB file instead of a database
+# server. Great for local evaluation / CI.
+#
+#   docker compose -f docker-compose.duckdb.yml up -d --build
+#
+# Note: DuckDB is single-writer, so this is for local/dev use — prefer
+# Postgres (docker-compose.yml) or ClickHouse for concurrent multi-user.
+services:
+  extractor:
+    build:
+      context: .
+      dockerfile: extractor/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: duckdb:///data/analytics.duckdb
+    volumes:
+      - duckdb-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DATABASE_URL: duckdb:///data/analytics.duckdb
+    volumes:
+      - duckdb-data:/data
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:8080:80"
+
+volumes:
+  duckdb-data:

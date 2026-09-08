@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.pytest_cache/
+.venv/
+.deps/
+.npm-cache/
+*.duckdb
+data/
+canon-state/
+.gh-cache/
+.test-ports.yml
+.pwscreenshot/
+.canon-partner/

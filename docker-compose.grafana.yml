@@ -1,0 +1,108 @@
+# Grafana variant: ships Grafana pre-wired to the Postgres warehouse, with the
+# data source and a sample dashboard auto-provisioned. For orgs that already
+# run Grafana, see docs/grafana.md to point your existing instance at the marts.
+#
+#   docker compose -f docker-compose.grafana.yml up -d --build
+#   docker compose -f docker-compose.grafana.yml run --rm api python seed_demo.py
+#   # Grafana: http://localhost:3001 (admin / admin)
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics
+      POSTGRES_DB: analytics
+    volumes:
+      - grafana-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics -d analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+  extractor:
+    build:
+      context: .
+      dockerfile: extractor/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres:5432/analytics
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Kept so you can seed demo data and (optionally) use the JSON API data source.
+  # Not port-mapped: Grafana queries Postgres directly; this is internal only.
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres:5432/analytics
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Optional sidecar (enable with --profile dsh): ingests DeepSeek Harness
+  # session logs into the warehouse on an interval, so Grafana tracks new DSH
+  # sessions without a manual re-run. Remove/ignore if you don't use DSH.
+  dsh-ingest:
+    profiles: ["dsh"]
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres:5432/analytics
+      DSH_INGEST_INTERVAL_SECONDS: "300"
+    volumes:
+      - ${DSH_SESSIONS_DIR:-~/.dsh/sessions}:/root/.dsh/sessions:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["python", "dsh_ingest_loop.py"]
+
+  # Behaviour-governance sidecar: polls the directory canon writes its
+  # `canon export --format json` documents into and upserts them into the
+  # behaviour-governance tables. Idempotent and safe to leave running.
+  canon-ingest:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres:5432/analytics
+      CANON_INGEST_INTERVAL_SECONDS: "300"
+    volumes:
+      - ${CANON_EXPORT_DIR:-./canon-state}:/app/canon-state:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["python", "canon_ingest_loop.py"]
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  grafana-pgdata:
+  grafana-data:

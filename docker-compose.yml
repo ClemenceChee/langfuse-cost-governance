@@ -1,0 +1,78 @@
+services:
+  # Default warehouse: Postgres. Switch backends by changing DATABASE_URL
+  # (see docker-compose.duckdb.yml for the zero-server variant, or point
+  # DATABASE_URL at your own ClickHouse).
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics
+      POSTGRES_DB: analytics
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics -d analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  # Pulls traces/observations from Langfuse and normalizes them into the warehouse.
+  extractor:
+    build:
+      context: .
+      dockerfile: extractor/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres:5432/analytics
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Semantic/calculation layer: serves KPIs as JSON.
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres:5432/analytics
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:8000:8000"
+
+  # React dashboard + nginx (serves static assets, proxies /api -> api).
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:8080:80"
+
+  # Behaviour-governance sidecar: polls the directory canon writes its
+  # `canon export --format json` documents into and upserts them into the
+  # warehouse. Idempotent and safe to leave running (empty dir = no-op).
+  canon-ingest:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://analytics:analytics@postgres:5432/analytics
+      CANON_INGEST_INTERVAL_SECONDS: "300"
+    volumes:
+      - ${CANON_EXPORT_DIR:-./canon-state}:/app/canon-state:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["python", "canon_ingest_loop.py"]
+
+volumes:
+  pgdata:
